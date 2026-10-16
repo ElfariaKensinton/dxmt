@@ -1,0 +1,102 @@
+name: Build macOS ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: llvmorg-15.0.7
+  LLVM_ARM64_INSTALL: toolchains/llvm-darwin-arm64
+  LLVM_ARM64_CACHE_KEY: llvm-darwin-llvmorg-15.0.7-arm64-macos
+
+jobs:
+  setup-llvm-arm64:
+    name: Prepare ARM64 LLVM
+    runs-on: macos-15
+    steps:
+      - name: Restore LLVM ARM64 cache
+        id: llvm-cache
+        uses: actions/cache/restore@v5
+        with:
+          key: ${{ env.LLVM_ARM64_CACHE_KEY }}
+          restore-keys: |
+            llvm-darwin-${{ env.LLVM_VERSION }}-arm64-
+          path: ${{ env.LLVM_ARM64_INSTALL }}
+
+      - name: Clone LLVM source
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchains
+          git clone --depth 1 --branch "${LLVM_VERSION}" https://github.com/llvm/llvm-project.git toolchains/llvm-project
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app
+
+      - name: Build LLVM for macOS ARM64
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          cmake -B toolchains/llvm-darwin-arm64-build -S toolchains/llvm-project/llvm \
+            -DCMAKE_INSTALL_PREFIX="$(pwd)/${LLVM_ARM64_INSTALL}" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DLLVM_HOST_TRIPLE=arm64-apple-darwin \
+            -DLLVM_ENABLE_ASSERTIONS=On \
+            -DLLVM_ENABLE_ZSTD=Off \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-D_LIBCPP_KEEP_TRANSITIVE_INCLUDES_LLVM23" \
+            -DLLVM_TARGETS_TO_BUILD="" \
+            -DLLVM_BUILD_TOOLS=Off \
+            -DLLVM_INCLUDE_BENCHMARKS=Off \
+            -DBUG_REPORT_URL="https://github.com/3Shain/dxmt" \
+            -DPACKAGE_VENDOR="DXMT" \
+            -DLLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO=Off \
+            -G Ninja
+          cmake --build toolchains/llvm-darwin-arm64-build
+          cmake --install toolchains/llvm-darwin-arm64-build
+
+      - name: Save LLVM ARM64 cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          key: ${{ env.LLVM_ARM64_CACHE_KEY }}
+          path: ${{ env.LLVM_ARM64_INSTALL }}
+
+  build:
+    name: Build DXMT (macOS ARM64 only)
+    runs-on: macos-15
+    needs: setup-llvm-arm64
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Restore LLVM ARM64 cache
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-darwin-llvmorg-15.0.7-arm64-macos
+          restore-keys: |
+            llvm-darwin-llvmorg-15.0.7-arm64-
+          path: toolchains/llvm-darwin-arm64
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app
+
+      - name: Install Meson
+        run: pip3 install meson==1.10.0 --break-system-packages
+
+      - name: Build and install DXMT
+        run: |
+          meson setup -Dnative_llvm_path=toolchains/llvm-darwin-arm64 build \
+            --buildtype release --prefix "$(pwd)/install" --strip
+          meson compile -C build
+          meson install -C build
+
+      - name: Upload macOS ARM64 build
+        uses: actions/upload-artifact@v6
+        with:
+          name: dxmt-macos-arm64-${{ github.sha }}
+          path: install
+          if-no-files-found: error
+          compression-level: 6
