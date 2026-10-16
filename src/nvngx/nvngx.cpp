@@ -7,6 +7,10 @@
 #include "../d3d11/d3d11_interfaces.hpp"
 #include "../dxgi/dxgi_interfaces.h"
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <fstream>
+#include <string>
 
 namespace dxmt {
 Logger Logger::s_instance("nvngx.log");
@@ -236,8 +240,64 @@ NVNGX_DLSS_GetOptimalSettingsCallback(NVNGXParameter *params) {
     break;
   }
 
-  out_width = std::ceil(width * scale);
-  out_height = std::ceil(height * scale);
+  // Optional FSR4 override. DXMT's optimal-settings callback is the point at
+  // which DLSS clients choose their actual render dimensions; changing only
+  // the MetalFX descriptor later would mislabel full-resolution textures.
+  bool render_override = false;
+  const char *forced_width = std::getenv("FSR4_DXMT_RENDER_WIDTH");
+  const char *forced_height = std::getenv("FSR4_DXMT_RENDER_HEIGHT");
+  // Panel values take precedence over install-time environment defaults.
+  // A saved 0x0 explicitly returns control to the game's selected preset.
+  if (const char *root = std::getenv("FSR4_ROOT")) {
+    std::ifstream settings(std::string(root) + "/dist/crossover/panel.conf");
+    std::string line;
+    unsigned long panel_width = 0, panel_height = 0;
+    bool have_width = false, have_height = false;
+    while (std::getline(settings, line)) {
+      if (line.compare(0, 13, "render_width=") == 0) {
+        try { panel_width = std::stoul(line.substr(13)); have_width = true; } catch (...) {}
+      } else if (line.compare(0, 14, "render_height=") == 0) {
+        try { panel_height = std::stoul(line.substr(14)); have_height = true; } catch (...) {}
+      }
+    }
+    if (have_width && have_height) {
+      static thread_local char width_value[24], height_value[24];
+      std::snprintf(width_value, sizeof(width_value), "%lu", panel_width);
+      std::snprintf(height_value, sizeof(height_value), "%lu", panel_height);
+      forced_width = width_value;
+      forced_height = height_value;
+    }
+  }
+  if (forced_width || forced_height) {
+    char *width_end = nullptr;
+    char *height_end = nullptr;
+    const unsigned long requested_width = forced_width ? std::strtoul(forced_width, &width_end, 10) : 0;
+    const unsigned long requested_height = forced_height ? std::strtoul(forced_height, &height_end, 10) : 0;
+    const bool width_valid = !forced_width || (width_end != forced_width && *width_end == '\0'
+        && requested_width >= std::ceil(width / 3.0) && requested_width <= width);
+    const bool height_valid = !forced_height || (height_end != forced_height && *height_end == '\0'
+        && requested_height >= std::ceil(height / 3.0) && requested_height <= height);
+    if (width_valid && height_valid) {
+      if (forced_width && forced_height) {
+        out_width = static_cast<unsigned int>(requested_width);
+        out_height = static_cast<unsigned int>(requested_height);
+        scale = out_width / static_cast<float>(width);
+      } else if (forced_width) {
+        out_width = static_cast<unsigned int>(requested_width);
+        scale = out_width / static_cast<float>(width);
+        out_height = std::ceil(height * scale);
+      } else {
+        out_height = static_cast<unsigned int>(requested_height);
+        scale = out_height / static_cast<float>(height);
+        out_width = std::ceil(width * scale);
+      }
+      render_override = true;
+    }
+  }
+  if (!render_override) {
+    out_width = std::ceil(width * scale);
+    out_height = std::ceil(height * scale);
+  }
 
   params->Set(NVNGX_Parameter_Scale, scale);
   params->Set(NVNGX_Parameter_SuperSampling_ScaleFactor, scale);
@@ -245,11 +305,13 @@ NVNGX_DLSS_GetOptimalSettingsCallback(NVNGXParameter *params) {
   params->Set(NVNGX_Parameter_OutHeight, out_height);
   params->Set(NVNGX_Parameter_Sharpness, 0.0f);
 
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width, (unsigned int)std::ceil(width / 3));
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Height, (unsigned int)std::ceil(height / 3));
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width,
+      render_override ? out_width : (unsigned int)std::ceil(width / 3));
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Height,
+      render_override ? out_height : (unsigned int)std::ceil(height / 3));
 
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Width, width);
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Height, height);
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Width, render_override ? out_width : width);
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Height, render_override ? out_height : height);
 
   params->Set("DLSSMode", 1);
 
