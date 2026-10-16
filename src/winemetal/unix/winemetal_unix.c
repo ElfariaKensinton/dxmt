@@ -1417,8 +1417,24 @@ static const int SIGNALS[] = {
 #endif
 };
 
+static void
+fsr4_load_hook(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    const char *path = getenv("FSR4_DXMT_HOOK");
+    if (!path || !path[0])
+      return;
+    void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle)
+      NSLog(@"[fsr4] DXMT hook load failed: %s", dlerror());
+    else
+      NSLog(@"[fsr4] DXMT hook loaded: %s", path);
+  });
+}
+
 static NTSTATUS
 _MTLDevice_newTemporalScaler(void *obj) {
+  fsr4_load_hook();
   struct unixcall_mtldevice_newfxtemporalscaler *params = obj;
   MTLFXTemporalScalerDescriptor *desc = [[MTLFXTemporalScalerDescriptor alloc] init];
   const struct WMTFXTemporalScalerInfo *info = params->info.ptr;
