@@ -10,3 +10,7 @@ The most recent development builds can be found [here](https://github.com/3Shain
 ## Build
 
 See [DEVELOPMENT.md](docs/DEVELOPMENT.md)
+
+## FSR4 DXMT overrides
+
+The optional FSR4 integration accepts `FSR4_DXMT_HOOK` for the hook library and `FSR4_DXMT_RENDER_WIDTH` / `FSR4_DXMT_RENDER_HEIGHT` for a render-size override. When `FSR4_ROOT` is set, values in `dist/crossover/panel.conf` take precedence over the render-size environment defaults.
